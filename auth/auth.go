@@ -6,8 +6,6 @@ import (
 	"github.com/Kviky/errors"
 	"github.com/Kviky/errors/models"
 	"github.com/dgrijalva/jwt-go"
-	log "github.com/sirupsen/logrus"
-
 	"github.com/lestrrat-go/jwx/jwk"
 )
 
@@ -25,7 +23,6 @@ type AWSCognitoClaims struct {
 
 // GetPublicKeySet - returns jwk set object
 func GetPublicKeySet(cognitoRegion, cognitoPoolID string) (*jwk.Set, error) {
-
 	// url - AWS Cognito Public keys url
 	// "https://cognito-idp.eu-central-1.amazonaws.com/eu-central-1_cTauv7zGJ/.well-known/jwks.json"
 	url := fmt.Sprintf("https://cognito-idp.%s.amazonaws.com/%s/.well-known/jwks.json",
@@ -33,10 +30,9 @@ func GetPublicKeySet(cognitoRegion, cognitoPoolID string) (*jwk.Set, error) {
 
 	// Download public keys information
 	// .Fetch method of https://github.com/lestrrat-go/jwx
-	publicKeySet, problem := jwk.Fetch(url)
-	if problem != nil {
-		log.WithField("util", "auth-util").WithError(problem).Error("failed to parse public key set!")
-		return nil, problem
+	publicKeySet, err := jwk.Fetch(url)
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch public keys: %w", err)
 	}
 
 	return publicKeySet, nil
@@ -44,9 +40,6 @@ func GetPublicKeySet(cognitoRegion, cognitoPoolID string) (*jwk.Set, error) {
 
 // GetJWTToken - returns jwt token object or problem details
 func GetJWTToken(cognitoAppID, tokenPrincipal string, publicKeySet *jwk.Set) (*jwt.Token, *models.ProblemDetails) {
-
-	log.Debugf("token:%s\ncognitoID:%s", tokenPrincipal, cognitoAppID)
-
 	// Parse token - it's actually doing parsing, validation and returning a token.
 	// Use .Parse or .ParseWithClaims methods from https://github.com/dgrijalva/jwt-go
 	token, err := jwt.ParseWithClaims(tokenPrincipal, &AWSCognitoClaims{}, parseKeys(cognitoAppID, publicKeySet))
@@ -56,7 +49,7 @@ func GetJWTToken(cognitoAppID, tokenPrincipal string, publicKeySet *jwk.Set) (*j
 		problem := errors.CreateProblemDetails(errors.InvalidAuthToken)
 
 		// extend problem.Details with the error report from the ParseWithClaims function
-		problem.Detail = fmt.Sprintf("%s %s", problem.Detail, err)
+		problem.Detail = fmt.Sprintf("%s %v", problem.Detail, err)
 		return nil, problem
 	}
 
@@ -65,34 +58,18 @@ func GetJWTToken(cognitoAppID, tokenPrincipal string, publicKeySet *jwk.Set) (*j
 
 func parseKeys(cognitoAppID string, publicKeySet *jwk.Set) func(token *jwt.Token) (interface{}, error) {
 	return func(token *jwt.Token) (interface{}, error) {
-
 		err := validateAud(token, cognitoAppID)
 		if err != nil {
-			log.WithError(err).Error("failed to validate aud from claims")
 			return nil, err
 		}
 
-		// Verify if the token was signed with correct signing method
-		// AWS Cognito is using RSA256 in this case
-		_, ok := token.Method.(*jwt.SigningMethodRSA)
-		if !ok {
-			alg := token.Header["alg"]
-			log.WithField("util", "auth-util").Errorf("Unexpected token signing method: %v", alg)
-			return nil, fmt.Errorf("unexpected token signing method: %v", alg)
+		kid, err := getKidFromToken(token)
+		if err != nil {
+			return nil, err
 		}
-
-		// Get "kid" value from token header
-		// "kid" is shorthand for Key ID
-		kid, ok := token.Header["kid"].(string)
-		if !ok {
-			log.WithField("util", "auth-util").Error("token header doesn't contain `kid` attribute!")
-			return nil, fmt.Errorf("token header doesn't contain `kid` attribute")
-		}
-		log.Debugf("kid: %v", kid)
 
 		keys := publicKeySet.LookupKeyID(kid)
 		if len(keys) == 0 {
-			log.WithField("util", "auth-util").Errorf("public key set doesn't contain requested public key. Key %v not found", kid)
 			return nil, fmt.Errorf("public key set doesn't contain requested public key. Key %v not found", kid)
 		}
 
@@ -100,13 +77,29 @@ func parseKeys(cognitoAppID string, publicKeySet *jwk.Set) func(token *jwt.Token
 		// Return token key as []byte{string} type
 		var tokenKey interface{}
 		if err = keys[0].Raw(&tokenKey); err != nil {
-			log.WithField("util", "auth-util").Error("failed to return raw token key!")
-			return nil, fmt.Errorf("failed to create raw token key: %s", err)
+			return nil, fmt.Errorf("failed to create raw token key: %w", err)
 		}
-		log.Debugf("tokenKey: %v\nkeys: %v", tokenKey, keys)
 
 		return tokenKey, nil
 	}
+}
+
+func getKidFromToken(token *jwt.Token) (string, error) {
+	// Verify if the token was signed with correct signing method
+	// AWS Cognito is using RSA256 in this case
+	_, ok := token.Method.(*jwt.SigningMethodRSA)
+	if !ok {
+		return "", fmt.Errorf("unexpected token signing method: %v", token.Header["alg"])
+	}
+
+	// Get "kid" value from token header
+	// "kid" is shorthand for Key ID
+	kid, ok := token.Header["kid"].(string)
+	if !ok {
+		return "", fmt.Errorf("token header doesn't contain `kid` attribute")
+	}
+
+	return kid, nil
 }
 
 // validateAud checks jwt token
@@ -116,7 +109,7 @@ func parseKeys(cognitoAppID string, publicKeySet *jwk.Set) func(token *jwt.Token
 func validateAud(token *jwt.Token, cognitoAppID string) error {
 	claims, err := getTokenClaims(token)
 	if err != nil {
-		return fmt.Errorf("failed to get claims from token: %s", err)
+		return fmt.Errorf("failed to get claims from token: %w", err)
 	}
 
 	if claims.Aud != cognitoAppID {
@@ -149,7 +142,7 @@ func VerifyJWT(principal string, publicKeysSet *jwk.Set, cognitoAppID string) (
 		return nil, problem
 	}
 
-	if jwtToken.Valid {
+	if !jwtToken.Valid {
 		return nil, nil
 	}
 
