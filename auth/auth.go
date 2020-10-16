@@ -94,7 +94,7 @@ func getKidFromToken(token *jwt.Token) (string, error) {
 
 	// Get "kid" value from token header
 	// "kid" is shorthand for Key ID
-	kid, ok := token.Header["kid"].(string)
+	kid, ok := token.Header[jwk.KeyIDKey].(string)
 	if !ok {
 		return "", fmt.Errorf("token header doesn't contain `kid` attribute")
 	}
@@ -109,7 +109,7 @@ func getKidFromToken(token *jwt.Token) (string, error) {
 func validateAud(token *jwt.Token, cognitoAppID string) error {
 	claims, err := getTokenClaims(token)
 	if err != nil {
-		return fmt.Errorf("failed to get claims from token: %w", err)
+		return err
 	}
 
 	if claims.Aud != cognitoAppID {
