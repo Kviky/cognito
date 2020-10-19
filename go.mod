@@ -1,4 +1,4 @@
-module kviky/cognito
+module github.com/Kviky/cognito
 
 go 1.14
 
