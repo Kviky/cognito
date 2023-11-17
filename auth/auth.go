@@ -15,6 +15,7 @@ import (
 // You can also add user identifier (f.e. username) to check additional details in DB
 type AWSCognitoClaims struct {
 	Aud      string `json:"aud"`
+	Name     string `json:"name"`
 	Username string `json:"cognito:username"`
 	Userid   string `json:"custom:userid"`
 
